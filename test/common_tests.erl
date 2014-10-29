@@ -6,12 +6,16 @@
 %%
 %%=============================================================================
 -module(common_tests).
--author("aivanov").
+-author("rusblaze").
 
 %%=============================================================================
 %% Includes
 %%=============================================================================
 -include_lib("eunit/include/eunit.hrl").
+
+start_stop_test_() ->
+    [ fun start_stop/0
+    ].
 
 basic_test_() ->
     { setup
@@ -19,7 +23,6 @@ basic_test_() ->
     , fun cleanup/1
     , [ fun get_conf/0
       , fun get_set_get_conf/0
-      , fun subscribtion_testing/0
       ]
     }.
 
@@ -30,6 +33,16 @@ setup() ->
 cleanup(_) ->
     ok = config_server:stop().
 
+start_stop() ->
+    PrivDir = code:priv_dir(config_server),
+    config_server:start([{priv_dir, PrivDir}]),
+    ?assert(ok == config_server:stop()),
+    {ok, Pid} = config_server:start_link([{priv_dir, PrivDir}]),
+    ?assert(erlang:is_pid(Pid)),
+    erlang:unlink(Pid),
+    ?assert(ok == config_server:stop()).
+    % ?assert({ok, "default value"} == config_server:get_component_config([some, unknown, section], "default value")).
+
 get_conf() ->
     ?assert(error == config_server:get_component_config([some, unknown, section])),
     ?assert({ok, "default value"} == config_server:get_component_config([some, unknown, section], "default value")).
@@ -38,12 +51,3 @@ get_set_get_conf() ->
     ?assert(error == config_server:get_component_config([some, unknown, section])),
     config_server:set_component_config([some, unknown, section], "default value"),
     ?assert({ok, "default value"} == config_server:get_component_config([some, unknown, section])).
-
-subscribtion_testing() ->
-    config_server:subscribe(self(), [some, unknown, section]),
-    ChangedValue = "changed value",
-    config_server:set_component_config([some, unknown, section], ChangedValue),
-    receive
-        {config_server, [some, unknown, section]} ->
-            ?assert({ok, ChangedValue} == config_server:get_component_config([some, unknown, section]))
-    end.
