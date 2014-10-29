@@ -9,5 +9,7 @@ clean:
 	rebar clean
 
 test:
+	rm -f priv/configs/env.config
+	cd priv/configs && ln -s test.config env.config
 	rm -rf .eunit
-	rebar clean compile eunit
+	rebar eunit

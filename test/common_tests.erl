@@ -35,11 +35,12 @@ cleanup(_) ->
 
 start_stop() ->
     PrivDir = code:priv_dir(config_server),
-    config_server:start([{priv_dir, PrivDir}]),
+    {ok,Pid1} = config_server:start([{priv_dir, PrivDir}]),
+    ?assert(erlang:is_pid(Pid1)),
     ?assert(ok == config_server:stop()),
-    {ok, Pid} = config_server:start_link([{priv_dir, PrivDir}]),
-    ?assert(erlang:is_pid(Pid)),
-    erlang:unlink(Pid),
+    {ok, Pid2} = config_server:start_link([{priv_dir, PrivDir}]),
+    ?assert(erlang:is_pid(Pid2)),
+    erlang:unlink(Pid2),
     ?assert(ok == config_server:stop()).
     % ?assert({ok, "default value"} == config_server:get_component_config([some, unknown, section], "default value")).
 
