@@ -10,4 +10,4 @@ clean:
 
 test:
 	rm -rf .eunit
-	rebar clean compile eunit
+	rebar eunit
