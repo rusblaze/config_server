@@ -1,8 +1,8 @@
 language: erlang
 script: "make test"
 notifications:
-recipients:
-- rusblaze@gmail.com
+  email:
+    - rusblaze@gmail.com
 otp_release:
 - 17.0
 - 17.1
