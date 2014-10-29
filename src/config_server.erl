@@ -1,21 +1,29 @@
 %% -*- encoding: utf-8 -*-
 -module(config_server).
+-author("rusblaze").
 -behaviour(gen_server).
 
 %%======================================================================
 %% API functions
 %%======================================================================
--export([ start/0
+-export([
+        %% Start/Stop functions
+          start/0
         , start/1
         , start_link/0
         , start_link/1
         , stop/0
+        %% Get functions
         , get_component_config/1
         , get_component_config/2
+        %% Set functions
         , set_component_config/2
-        , subscribe/2
         , set_config/1
         , reload_config/0
+        %% Subscription manage functions
+        , subscribe/2
+        , unsubscribe/1
+        %% Monitoring
         , print_info/0
         ]).
 
@@ -30,21 +38,27 @@
         , code_change/3
         ]).
 
+%%======================================================================
+%% Types
+%%======================================================================
 -type section() :: atom() | string().
+-export_type([section/0]).
 
--record(sub_callback, {pid :: pid()}).
+-type section_path() :: list(section()).
+-export_type([section_path/0]).
 
--record(state, { path        :: string()
-               , config      :: orddict:orddict()
-               , subscribers :: orddict:orddict()
-               }).
-
+%%======================================================================
+%% Macro
+%%======================================================================
 -define(COMMON_CONFIG_FILE_NAME,      "common.config").
 -define(ENVIRONMENT_CONFIG_FILE_NAME, "env.config").
 
 %%======================================================================
 %% API functions
 %%======================================================================
+%%----------------------------------------------------------------------
+%% Start/Stop functions
+%%----------------------------------------------------------------------
 start() ->
     {ok, Application} = application:get_application(),
     PrivDir = code:priv_dir(Application),
@@ -77,26 +91,29 @@ start_link(Args) ->
             Other
     end.
 
--spec get_component_config(Section :: [section()]) -> Result when
+stop() ->
+    gen_server:call(?MODULE, stop).
+
+%%----------------------------------------------------------------------
+%% Get functions
+%%----------------------------------------------------------------------
+-spec get_component_config(Section :: section_path()) -> Result when
     Result :: {ok, Value :: term()}
              | error.
 get_component_config(Section) ->
     gen_server:call(?MODULE, {get_component_config, Section}, 1000).
 
--spec get_component_config(Section :: [section()], Default :: term()) -> Result when
+-spec get_component_config(Section :: section_path(), Default :: term()) -> Result when
     Result :: {ok, Value :: term()}.
-
 get_component_config(Section, Default) ->
     gen_server:call(?MODULE, {get_component_config, Section, Default}, 1000).
 
+%%----------------------------------------------------------------------
+%% Set functions
+%%----------------------------------------------------------------------
+-spec set_component_config(Section :: section_path(), Value :: term()) -> no_return().
 set_component_config(Section, Value) ->
     gen_server:cast(?MODULE, {set_component_config, Section, Value}).
-
--spec subscribe(Pid, Section) -> no_return() when
-      Pid      :: pid()
-    , Section :: [section()].
-subscribe(Pid, Section) ->
-    gen_server:cast(?MODULE, {subscribe, Pid, Section}).
 
 reload_config() ->
     ok.
@@ -104,11 +121,33 @@ reload_config() ->
 set_config(_NewConfig) ->
     ok.
 
+%%----------------------------------------------------------------------
+%% Subscription manage functions
+%%----------------------------------------------------------------------
+-spec subscribe(PidOrNameOrFun, Section) -> {ok, reference()} when
+      PidOrNameOrFun :: pid()
+                      | module()
+                      | fun((...) -> no_return())
+    , Section        :: section_path().
+subscribe(PidOrNameOrFun, Section) when   erlang:is_pid(PidOrNameOrFun)
+                                        ; erlang:is_atom(PidOrNameOrFun)
+                                        ; erlang:is_function(PidOrNameOrFun) ->
+    gen_server:call(?MODULE, {subscribe, PidOrNameOrFun, Section});
+subscribe(PidOrNameOrFun, _Section) ->
+    {error, {wrong_type, PidOrNameOrFun}}.
+
+-spec unsubscribe(Ref :: reference()) -> ok | {error, no_ref}.
+unsubscribe(Ref) when erlang:is_reference(Ref) ->
+    gen_server:call(?MODULE, {unsubscribe, Ref});
+unsubscribe(Ref) ->
+    {error, {wrong_type, Ref}}.
+
+%%----------------------------------------------------------------------
+%% Monitoring
+%%----------------------------------------------------------------------
 print_info() ->
     gen_server:call(?MODULE, print_info).
 
-stop() ->
-    gen_server:call(?MODULE, stop).
 %%======================================================================
 %% Callback functions
 %%======================================================================
@@ -130,66 +169,80 @@ init(Args) ->
                                 , Replacements
                                 ),
 
-    {ok, #state{ path        = ConfDir
-               , config      = Config
-               , subscribers = orddict:new()
-               }
+    {ok, #{ path        => ConfDir
+          , config      => Config
+          , subscribers => #{}
+          }
     }.
 
-handle_call({get_component_config, SectionPath}, _From, #state{config=Config} = State) ->
+handle_call({get_component_config, SectionPath}, _From, #{config := Config} = StateData) ->
     Reply =
         case xpath(SectionPath, Config) of
             error -> error;
             Other -> Other
         end,
 
-    {reply, Reply, State};
+    {reply, Reply, StateData};
 
-handle_call({get_component_config, SectionPath, Default}, _From, #state{config=Config} = State) ->
+handle_call({get_component_config, SectionPath, Default}, _From, #{config := Config} = StateData) ->
     Reply =
         case xpath(SectionPath, Config) of
             error -> {ok, Default};
             Other -> Other
         end,
 
-    {reply, Reply, State};
+    {reply, Reply, StateData};
 
-handle_call(print_info, _From, State) ->
-    {reply, ok, State};
+handle_call(print_info, _From, StateData) ->
+    {reply, ok, StateData};
 
-handle_call(stop, _From, State) ->
-    {stop, stop_on_call, ok, State};
+handle_call(stop, _From, StateData) ->
+    {stop, stop_on_call, ok, StateData};
 
-handle_call(Request, _From, State) -> {reply, {error, {unknown_command, Request}}, State}.
+handle_call({subscribe, PidOrNameOrFun, SectionPath}, _From, #{subscribers := Subscribers} = StateData) ->
+    Ref = erlang:make_ref(),
+    if
+        erlang:is_pid(PidOrNameOrFun) ->
+            Value = #{type => pid, subscriber => PidOrNameOrFun};
+        erlang:is_atom(PidOrNameOrFun) ->
+            Value = #{type => name, subscriber => PidOrNameOrFun};
+        true ->
+            Value = #{type => function, subscriber => PidOrNameOrFun}
+    end,
 
-handle_cast({set_component_config, SectionPath, Value}, #state{ config=Config
-                                                              , subscribers=Subscribers
-                                                              } = State) ->
-    NewConfig = xpath_store(SectionPath, Value, Config),
+    OldSubscribersList = maps:get(SectionPath, Subscribers, #{}),
+    NewSubscribersList = maps:put(Ref, Value, OldSubscribersList),
+    NewSubscribers = maps:put(SectionPath, NewSubscribersList, Subscribers),
+    NewStateData = maps:put(subscribers, NewSubscribers, StateData),
 
-    notify_subscribers(SectionPath, Subscribers),
+    {reply, {ok, Ref}, NewStateData};
 
-    {noreply, State#state{config=NewConfig}};
+handle_call({unsubscribe, Ref}, _From, #{subscribers := Subscribers} = StateData) ->
+    NewSubscribers = maps:map( fun(_SectionPath, SubscribersList) ->
+                                   maps:without([Ref], SubscribersList)
+                               end
+                             , Subscribers
+                             ),
 
-handle_cast({subscribe, Pid, SectionPath}, #state{subscribers=Subscribers} = State) ->
-    Callback = #sub_callback{pid = Pid},
+    NewStateData = maps:put(subscribers, NewSubscribers, StateData),
+    {reply, {ok, Ref}, NewStateData};
 
-    NewSectionSubscribers =
-        case orddict:find(SectionPath, Subscribers) of
-            error -> % no subscribers for this section
-                [Callback];
-            {ok, SectionSubscribers} ->
-                case lists:member(Callback, SectionSubscribers) of
-                    true ->
-                        SectionSubscribers;
-                    false ->
-                        [Callback | SectionSubscribers]
-                end
-        end,
+handle_call(Request, _From, StateData) -> {reply, {error, {unknown_command, Request}}, StateData}.
 
-    NewSubscribers = orddict:store(SectionPath, NewSectionSubscribers, Subscribers),
+handle_cast( {set_component_config, SectionPath, NewValue}
+           , #{ config      := Config
+              , subscribers := Subscribers
+              } = StateData
+           ) ->
+    OldValue = case xpath(SectionPath, Config) of
+                   error -> error;
+                   Other -> Other
+               end,
+    NewConfig = xpath_store(SectionPath, NewValue, Config),
+    notify_subscribers(SectionPath, OldValue, NewValue, Subscribers),
 
-    {noreply, State#state{subscribers=NewSubscribers}};
+    {noreply, maps:put(config, NewConfig, StateData)};
+
 
 handle_cast(_Request, State) -> {noreply, State}.
 
@@ -203,19 +256,36 @@ code_change(_OldVsn, State, _Extra) -> {ok, State}.
 %%======================================================================
 %% Internal functions
 %%======================================================================
-notify_subscribers(SectionPath, AllSubscribers) ->
-    case orddict:find(SectionPath, AllSubscribers) of
-        error ->
-            ok;
-        {ok, Subscribers} ->
-            lists:foreach( fun(#sub_callback{pid=Pid}) ->
-                                   Pid ! {?MODULE, SectionPath};
-                               (WrongCallback) ->
-                                   error_logger:info_msg("Wrong callback ~p", [WrongCallback])
+notify_subscribers(SectionPath, OldValue, NewValue, Subscribers) ->
+    SubscribersList = maps:get(SectionPath, Subscribers, #{}),
+    maps:fold( fun(Ref, Subscriber, AccIn) ->
+                   case Subscriber of
+                       #{type := pid, subscriber := Pid} ->
+                           Pid ! {?MODULE, #{section => SectionPath, old => OldValue, new => NewValue}},
+                           AccIn;
+                       #{type := name, subscriber := Name} ->
+                           try
+                               ok = Name:notify_config(SectionPath, OldValue, NewValue),
+                               AccIn
+                           catch
+                               Ec:Ee ->
+                                   Error = maps:put(Ref, {Ec,Ee}, #{}),
+                                   [Error | AccIn]
+                           end;
+                       #{type := function, subscriber := Fun} ->
+                           try
+                               Fun(SectionPath, OldValue, NewValue),
+                               AccIn
+                           catch
+                               Ec:Ee ->
+                                   Error = maps:put(Ref, {Ec,Ee}, #{}),
+                                   [Error | AccIn]
                            end
-                         , Subscribers
-                         )
-    end.
+                   end
+               end
+             , []
+             , SubscribersList
+             ).
 
 merge_configs(CommonConfig, EnvConfig, Replacements) ->
     Merged = orddict:merge(fun(_Key, CommonSection, EnvSection) ->
