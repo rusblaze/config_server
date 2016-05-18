@@ -159,18 +159,12 @@ init(Args) ->
     {ok, [CommonConfig]} = file:consult(ConfDir ++ ?COMMON_CONFIG_FILE_NAME),
     {ok, [EnvConfig]}    = file:consult(ConfDir ++ ?ENVIRONMENT_CONFIG_FILE_NAME),
 
-    Replacements = [{"%priv%", PrivDir}],
+    Merged = deep_merge(CommonConfig, EnvConfig),
 
-    CommonConfigDict = to_orddict(CommonConfig),
-    EnvConfigDict    = to_orddict(EnvConfig),
-
-    {ok, Config} = merge_configs( CommonConfigDict
-                                , EnvConfigDict
-                                , Replacements
-                                ),
+    % Replacements = #{"%priv%" => PrivDir},
 
     {ok, #{ path        => ConfDir
-          , config      => Config
+          , config      => Merged
           , subscribers => #{}
           }
     }.
@@ -179,7 +173,7 @@ handle_call({get_component_config, SectionPath}, _From, #{config := Config} = St
     Reply =
         case xpath(SectionPath, Config) of
             error -> error;
-            Other -> Other
+            Other -> {ok, Other}
         end,
 
     {reply, Reply, StateData};
@@ -188,7 +182,7 @@ handle_call({get_component_config, SectionPath, Default}, _From, #{config := Con
     Reply =
         case xpath(SectionPath, Config) of
             error -> {ok, Default};
-            Other -> Other
+            Other -> {ok, Other}
         end,
 
     {reply, Reply, StateData};
@@ -256,6 +250,35 @@ code_change(_OldVsn, State, _Extra) -> {ok, State}.
 %%======================================================================
 %% Internal functions
 %%======================================================================
+recursive_merge_values([], BaseConfig, _EnvConfig) ->
+    BaseConfig;
+recursive_merge_values([Key | Keys], BaseConfig, EnvConfig) ->
+    NewBaseConfig = recursive_merge_value(Key, BaseConfig, EnvConfig),
+    recursive_merge_values(Keys, NewBaseConfig, EnvConfig).
+
+recursive_merge_value(Key, BaseConfig, EnvConfig) ->
+    BaseConfigValue = maps:get(Key, BaseConfig, undefined),
+    EnvConfigValue  = maps:get(Key, EnvConfig, undefined),
+
+    case {BaseConfigValue, EnvConfigValue} of
+        {_, undefined} ->
+            BaseConfig;
+        {undefined, _} ->
+            maps:put(Key, EnvConfigValue, BaseConfig);
+        {BaseConfigValue, EnvConfigValue} when is_map(BaseConfigValue) andalso is_map(EnvConfigValue) ->
+            maps:put(Key, deep_merge(BaseConfigValue, EnvConfigValue), BaseConfig);
+        {BaseConfigValue, EnvConfigValue} ->
+            maps:put(Key, EnvConfigValue, BaseConfig)
+    end.
+
+deep_merge(BaseConfig, EnvConfig) when is_map(BaseConfig) andalso is_map(EnvConfig) ->
+    Keys = maps:keys(BaseConfig),
+    NewBaseConfig = recursive_merge_values(Keys, BaseConfig, EnvConfig),
+    recursive_merge_values(Keys, EnvConfig, NewBaseConfig);
+deep_merge(_BaseConfig, _EnvConfig) ->
+    throw("Bad config").
+
+
 notify_subscribers(SectionPath, OldValue, NewValue, Subscribers) ->
     SubscribersList = maps:get(SectionPath, Subscribers, #{}),
     maps:fold( fun(Ref, Subscriber, AccIn) ->
@@ -287,100 +310,111 @@ notify_subscribers(SectionPath, OldValue, NewValue, Subscribers) ->
              , SubscribersList
              ).
 
-merge_configs(CommonConfig, EnvConfig, Replacements) ->
-    Merged = orddict:merge(fun(_Key, CommonSection, EnvSection) ->
-                               merge_config_section( CommonSection
-                                                   , EnvSection
-                               )
-                           end,
-                           CommonConfig,
-                           EnvConfig),
-    Replaced = replace(Merged, Replacements),
+% merge_configs(CommonConfig, EnvConfig, Replacements) ->
+%     Merged = orddict:merge(fun(_Key, CommonSection, EnvSection) ->
+%                                merge_config_section( CommonSection
+%                                                    , EnvSection
+%                                )
+%                            end,
+%                            CommonConfig,
+%                            EnvConfig),
+%     Replaced = replace(Merged, Replacements),
 
-    {ok, Replaced}.
+%     {ok, Replaced}.
 
-merge_config_section(CCSection, ECSection) when is_list(CCSection), is_list(ECSection) ->
-    orddict:merge(fun(_Key, CommonValue, EnvValue) when is_list(CommonValue), is_list(EnvValue) ->
-                          {ok, Merged} = merge_configs(CommonValue, EnvValue, []),
-                          Merged;
-                     (_Key, _CommonValue, EnvValue) ->
-                              EnvValue
-                  end,
-                  CCSection,
-                  ECSection);
+% merge_config_section(CCSection, ECSection) when is_list(CCSection), is_list(ECSection) ->
+%     orddict:merge(fun(_Key, CommonValue, EnvValue) when is_list(CommonValue), is_list(EnvValue) ->
+%                           {ok, Merged} = merge_configs(CommonValue, EnvValue, []),
+%                           Merged;
+%                      (_Key, _CommonValue, EnvValue) ->
+%                               EnvValue
+%                   end,
+%                   CCSection,
+%                   ECSection);
 
-merge_config_section(_CCSection, ECSection) ->
-    ECSection.
+% merge_config_section(_CCSection, ECSection) ->
+%     ECSection.
 
-replace({Key, Value}, []) ->
-    {Key, Value};
+% replace({Key, Value}, []) ->
+%     {Key, Value};
 
-replace({Key, Value}, [{Re, Replacement} | ReplacementsTail] = Replacements) ->
-    case io_lib:printable_latin1_list(Value) or io_lib:printable_unicode_list(Value) of
-       true ->
-           replace({Key, re:replace(Value, Re, Replacement, [global, {return, list}])}, ReplacementsTail);
-       false ->
-           {Key, replace(Value, Replacements)}
-    end;
+% replace({Key, Value}, [{Re, Replacement} | ReplacementsTail] = Replacements) ->
+%     case io_lib:printable_latin1_list(Value) or io_lib:printable_unicode_list(Value) of
+%        true ->
+%            replace({Key, re:replace(Value, Re, Replacement, [global, {return, list}])}, ReplacementsTail);
+%        false ->
+%            {Key, replace(Value, Replacements)}
+%     end;
 
-replace(Config, Replacements) when is_list(Config) ->
-    case io_lib:printable_latin1_list(Config) or io_lib:printable_unicode_list(Config) of
-       true ->
-           Config;
-       false ->
-           lists:map( fun({K, V}) ->
-                            replace({K, V}, Replacements);
-                         (L) when is_list(L) ->
-                            replace(L, Replacements);
-                         (Other) ->
-                            Other
-                       end
-                     , Config
-                     )
-    end;
+% replace(Config, Replacements) when is_list(Config) ->
+%     case io_lib:printable_latin1_list(Config) or io_lib:printable_unicode_list(Config) of
+%        true ->
+%            Config;
+%        false ->
+%            lists:map( fun({K, V}) ->
+%                             replace({K, V}, Replacements);
+%                          (L) when is_list(L) ->
+%                             replace(L, Replacements);
+%                          (Other) ->
+%                             Other
+%                        end
+%                      , Config
+%                      )
+%     end;
 
-replace(Config, _) ->
-    Config.
+% replace(Config, _) ->
+%     Config.
 
 xpath([Section | []], Config) ->
-    orddict:find(Section, Config);
-
-xpath([Section | SectionPath], Config) ->
-    case orddict:find(Section, Config) of
-        {ok, ConfigSubTree} when is_list(ConfigSubTree) ->
-            xpath(SectionPath, ConfigSubTree);
+    case maps:get(Section, Config, <<>>) of
+        <<>> ->
+            error_logger:error_msg("xpath... Can't find ~p", [Section]),
+            error;
         Other ->
-            error_logger:error_msg("xpath... Can't search ~p in ~p", [SectionPath, Other]),
+            Other
+    end;
+xpath([Section | SectionPath], Config) ->
+    case maps:get(Section, Config, <<>>) of
+        <<>> ->
+            error_logger:error_msg("xpath... Can't find ~p", [Section]),
+            error;
+        ConfigSubMap when is_map(ConfigSubMap) ->
+            xpath(SectionPath, ConfigSubMap);
+        Other ->
+            error_logger:error_msg("xpath... Can't find ~p in ~p", [SectionPath, Other]),
             error
     end.
 
 
 xpath_store([Section | []], Value, Config) ->
-    orddict:store(Section, Value, Config);
+    maps:put(Section, Value, Config);
 
 xpath_store([Section | SectionPath], Value, Config) ->
     ConfigSubTree =
-        case orddict:find(Section, Config) of
-            error ->
-                orddict:new();
-            {ok, Other} ->
-                Other
+        case maps:get(Section, Config, <<>>) of
+            <<>> ->
+                #{};
+            ConfigSubMap when is_map(ConfigSubMap) ->
+                ConfigSubMap;
+            Other ->
+                error_logger:error_msg("Can't replace ~p with map", [Other]),
+                error
         end,
-    orddict:store(Section, xpath_store(SectionPath, Value, ConfigSubTree), Config).
+    maps:put(Section, xpath_store(SectionPath, Value, ConfigSubTree), Config).
 
-to_orddict(Config) when is_list(Config) ->
-    ConfigDict = lists:filter( fun({_Key, _Value}) -> true;
-                                  (_Other) -> false
-                               end,
-                               Config
-                             ),
-    case ConfigDict of
-        [] ->
-            Config;
-        _Other ->
-            ConfigOrdDict = orddict:from_list(ConfigDict),
-            orddict:map(fun(_Key, Value) -> to_orddict(Value) end, ConfigOrdDict)
-    end;
+% to_orddict(Config) when is_list(Config) ->
+%     ConfigDict = lists:filter( fun({_Key, _Value}) -> true;
+%                                   (_Other) -> false
+%                                end,
+%                                Config
+%                              ),
+%     case ConfigDict of
+%         [] ->
+%             Config;
+%         _Other ->
+%             ConfigOrdDict = orddict:from_list(ConfigDict),
+%             orddict:map(fun(_Key, Value) -> to_orddict(Value) end, ConfigOrdDict)
+%     end;
 
-to_orddict(Config) ->
-    Config.
+% to_orddict(Config) ->
+%     Config.

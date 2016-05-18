@@ -1,15 +1,26 @@
 .PHONY: test
 
-all:clean compile
+all:upgrade clean compile
 
-compile:
-	rebar compile
+upgrade:
+	rebar3 upgrade
 
 clean:
-	rebar clean
+	rebar3 clean --all
 
-test:
+compile:
+	rebar3 compile
+
+rel:clean compile
+	rebar3 release
+
+devrel:clean compile
 	rm -f priv/configs/env.config
-	cd priv/configs && ln -s test.config env.config
-	rm -rf .eunit
-	rebar eunit
+	ln -s dev.config priv/configs/env.config
+	./dev_start.sh
+
+test: all
+	rm -f priv/configs/env.config
+	ln -s test.config priv/configs/env.config
+	rebar3 eunit --dir="test" --cover=true --verbose=true
+	rebar3 cover
