@@ -4,5 +4,6 @@ notifications:
   email:
     - rusblaze@gmail.com
 otp_release:
-- 17.1
-- 17.3
+- 18.1
+- 18.2
+- 18.3
