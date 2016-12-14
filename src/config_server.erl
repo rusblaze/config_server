@@ -74,13 +74,16 @@ start(Args) ->
 
 start_link() ->
     {ok, Application} = application:get_application(),
-    PrivDir = code:priv_dir(Application),
-    case PrivDir of
-        {error, bad_name} ->
-            {error, no_priv_dir};
-        DirName ->
-            ?MODULE:start_link([{priv_dir, DirName}])
-    end.
+    start_link(Application).
+
+start_link(Application) when is_atom(Application) ->
+  PrivDir = code:priv_dir(Application),
+  case PrivDir of
+    {error, bad_name} ->
+      {error, no_priv_dir};
+    DirName ->
+      ?MODULE:start_link([{priv_dir, DirName}])
+  end;
 
 start_link(Args) ->
     case gen_server:start_link({local,?MODULE}, ?MODULE, Args, []) of

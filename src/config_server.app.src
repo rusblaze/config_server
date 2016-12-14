@@ -1,13 +1,16 @@
-{ application
-, config_server
-, [ {description, "An Erlang config_server library"}
-  , {vsn, "git"}
-  , {modules, [config_server]}
-  , {registered, []}
-  , {applications, [ kernel
-                   , stdlib
-                   ]
-    }
-  , {env, []}
-  ]
-}.
+{application, config_server,
+ [{description, "An Erlang config_server application"},
+  {vsn, "0.1.0"},
+  {registered, []},
+  {mod, { config_server_app, []}},
+  {applications,
+   [kernel,
+    stdlib
+   ]},
+  {env,[]},
+  {modules, []},
+
+  {maintainers, []},
+  {licenses, []},
+  {links, []}
+ ]}.
